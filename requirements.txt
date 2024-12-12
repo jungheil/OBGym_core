@@ -1,0 +1,6 @@
+APScheduler==3.11.0
+curl-cffi==0.5.9
+dataclasses-json==0.6.7
+ddddocr==1.5.6
+lxml==5.3.0
+pytz==2024.2

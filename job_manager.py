@@ -16,16 +16,20 @@ import logging
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 
+import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
 from dataclasses_json import dataclass_json
 
 from account_db import AccountSQLite
 from api.cas_api import CASLogin
 from gym import Gym, GymArea
+
+
+CHINA_TIMEZONE = pytz.timezone("Asia/Shanghai")
 
 
 class JobStatus(int, Enum):
@@ -54,7 +58,9 @@ class TaskResult:
     message: str
     data: Dict
     created_at: str = field(
-        default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        default_factory=lambda: datetime.now(CHINA_TIMEZONE).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
     )
 
 
@@ -78,10 +84,14 @@ class Job:
     failed_count: int = 0
     task_todo: Optional[TaskTodo] = None
     created_at: str = field(
-        default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        default_factory=lambda: datetime.now(CHINA_TIMEZONE).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
     )
     updated_at: str = field(
-        default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        default_factory=lambda: datetime.now(CHINA_TIMEZONE).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
     )
 
 
@@ -268,7 +278,7 @@ class JobSQLite:
         """
         cursor = self.conn.cursor()
         try:
-            job.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            job.updated_at = datetime.now(CHINA_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
             cursor.execute(
                 """
                 INSERT INTO jobs (
@@ -308,7 +318,7 @@ class JobSQLite:
         """
         cursor = self.conn.cursor()
         try:
-            job.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            job.updated_at = datetime.now(CHINA_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
             cursor.execute(
                 """
                 UPDATE jobs SET
@@ -515,6 +525,7 @@ class JobManager:
                     task_func,
                     "date",
                     run_date=job.task_todo.date,
+                    timezone=CHINA_TIMEZONE,
                     id=job.task_todo.task_id,
                 )
         jobs = job_db.get_all_jobs(job_type=JobType.BOOK, status=JobStatus.RETRY)
@@ -558,7 +569,10 @@ class JobManager:
         if job.job_level != JobLevel.USER:
             raise RuntimeError("Job is not a user job")
         if job.task_todo is not None:
-            self.scheduler.remove_job(job.task_todo.task_id)
+            try:
+                self.scheduler.remove_job(job.task_todo.task_id)
+            except Exception as e:
+                pass
         job_db.delete_job(job_id)
 
     def remove_all_main_jobs(self) -> None:
@@ -605,22 +619,32 @@ class JobManager:
         task_func = self.task_wrapper(
             task_book, self._job_only_book_hook(job_id), kwargs
         )
-        sdate = datetime.strptime(area.sdate, "%Y-%m-%d").date()
-        today = datetime.now().date()
+        sdate = (
+            datetime.strptime(area.sdate, "%Y-%m-%d")
+            .replace(tzinfo=CHINA_TIMEZONE)
+            .date()
+        )
+        today = datetime.now(CHINA_TIMEZONE).date()
         if sdate < today:
             raise RuntimeError("Invalid sdate")
         if sdate > today + timedelta(days=1):
-            run_date = datetime.strptime(area.sdate, "%Y-%m-%d") + timedelta(seconds=3)
+            run_date = datetime.strptime(area.sdate, "%Y-%m-%d").replace(
+                tzinfo=CHINA_TIMEZONE
+            ) + timedelta(seconds=3)
         else:
-            run_date = datetime.now() + timedelta(seconds=3)
+            run_date = datetime.now(CHINA_TIMEZONE) + timedelta(seconds=3)
         task_id = str(uuid.uuid4())
 
-        job.task_todo = TaskTodo(task_id, run_date.strftime("%Y-%m-%d %H:%M:%S"))
+        job.task_todo = TaskTodo(
+            task_id,
+            run_date.strftime("%Y-%m-%d %H:%M:%S"),
+        )
 
         self.scheduler.add_job(
             task_func,
             "date",
             run_date=run_date,
+            timezone=CHINA_TIMEZONE,
             id=task_id,
         )
         job_db.add_job(job)
@@ -649,9 +673,11 @@ class JobManager:
 
             time_str = job.kwargs["area"]["timeno"].strip().split("-")[1]
             date_str = job.kwargs["area"]["sdate"]
-            end_time = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+            end_time = datetime.strptime(
+                f"{date_str} {time_str}", "%Y-%m-%d %H:%M"
+            ).replace(tzinfo=CHINA_TIMEZONE)
 
-            if end_time < datetime.now():
+            if end_time < datetime.now(CHINA_TIMEZONE):
                 job.status = JobStatus.SUCCESS
                 job_db.update_job(job)
                 return job_id
@@ -665,15 +691,17 @@ class JobManager:
             if result.success:
                 job.failed_count = 0
                 job.status = JobStatus.RUNNING
-                run_date = datetime.now() + timedelta(minutes=30)
+                run_date = datetime.now(CHINA_TIMEZONE) + timedelta(minutes=30)
                 task_id = str(uuid.uuid4())
                 job.task_todo = TaskTodo(
-                    task_id, run_date.strftime("%Y-%m-%d %H:%M:%S")
+                    task_id,
+                    run_date.strftime("%Y-%m-%d %H:%M:%S"),
                 )
                 self.scheduler.add_job(
                     task_func,
                     "date",
                     run_date=run_date,
+                    timezone=CHINA_TIMEZONE,
                     id=task_id,
                 )
                 job_db.update_job(job)
@@ -685,15 +713,17 @@ class JobManager:
                 else:
                     job.status = JobStatus.RETRY
                     job.failed_count += 1
-                    run_date = datetime.now() + timedelta(seconds=20)
+                    run_date = datetime.now(CHINA_TIMEZONE) + timedelta(seconds=20)
                     task_id = str(uuid.uuid4())
                     job.task_todo = TaskTodo(
-                        task_id, run_date.strftime("%Y-%m-%d %H:%M:%S")
+                        task_id,
+                        run_date.strftime("%Y-%m-%d %H:%M:%S"),
                     )
                     self.scheduler.add_job(
                         task_func,
                         "date",
                         run_date=run_date,
+                        timezone=CHINA_TIMEZONE,
                         id=task_id,
                     )
                     job_db.update_job(job)
@@ -722,15 +752,19 @@ class JobManager:
         task_func = self.task_wrapper(
             task_update_expired_accounts, self._job_renew_account_hook(job_id), {}
         )
-        run_date = datetime.now() + timedelta(seconds=3)
+        run_date = datetime.now(CHINA_TIMEZONE) + timedelta(seconds=3)
         task_id = str(uuid.uuid4())
 
-        job.task_todo = TaskTodo(task_id, run_date.strftime("%Y-%m-%d %H:%M:%S"))
+        job.task_todo = TaskTodo(
+            task_id,
+            run_date.strftime("%Y-%m-%d %H:%M:%S"),
+        )
 
         self.scheduler.add_job(
             task_func,
             "date",
             run_date=run_date,
+            timezone=CHINA_TIMEZONE,
             id=task_id,
         )
         job_db.add_job(job)
@@ -764,29 +798,33 @@ class JobManager:
             )
 
             if result.success:
-                next_date = datetime.now() + timedelta(hours=2)
+                next_date = datetime.now(CHINA_TIMEZONE) + timedelta(hours=2)
                 task_id = str(uuid.uuid4())
                 job.task_todo = TaskTodo(
-                    task_id, next_date.strftime("%Y-%m-%d %H:%M:%S")
+                    task_id,
+                    next_date.strftime("%Y-%m-%d %H:%M:%S"),
                 )
                 self.scheduler.add_job(
                     task_func,
                     "date",
                     run_date=next_date,
+                    timezone=CHINA_TIMEZONE,
                     id=task_id,
                 )
                 job_db.update_job(job)
 
             else:
-                next_date = datetime.now() + timedelta(minutes=30)
+                next_date = datetime.now(CHINA_TIMEZONE) + timedelta(minutes=30)
                 task_id = str(uuid.uuid4())
                 job.task_todo = TaskTodo(
-                    task_id, next_date.strftime("%Y-%m-%d %H:%M:%S")
+                    task_id,
+                    next_date.strftime("%Y-%m-%d %H:%M:%S"),
                 )
                 self.scheduler.add_job(
                     task_func,
                     "date",
                     run_date=next_date,
+                    timezone=CHINA_TIMEZONE,
                     id=task_id,
                 )
                 job_db.update_job(job)
@@ -813,7 +851,7 @@ class JobManager:
 
         @functools.wraps(func)
         def wrapper():
-            now = datetime.now()
+            now = datetime.now(CHINA_TIMEZONE)
             for start, end in self.not_execute_time:
                 if start <= now.time() <= end:
                     logging.info("Task %s not executed at %s", func.__name__, now)

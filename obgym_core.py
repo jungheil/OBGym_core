@@ -20,6 +20,8 @@ from api.cas_api import CASLogin
 from gym import Gym, GymArea, GymCampus, GymFacility
 from job_manager import JobManager
 
+os.makedirs("log", exist_ok=True)
+
 BLUE_COLOR = "\033[94m"
 GREEN_COLOR = "\033[92m"
 YELLOW_COLOR = "\033[93m"
@@ -66,7 +68,7 @@ logging.root.setLevel(logging.DEBUG)
 
 
 class OBGymCore:
-    def __init__(self, host: str = "localhost", port: int = 9999) -> None:
+    def __init__(self, host: str = "0.0.0.0", port: int = 16999) -> None:
         """
         Initialize the OBGymCore server.
 

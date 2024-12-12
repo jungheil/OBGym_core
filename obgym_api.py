@@ -107,7 +107,7 @@ class OBGymAPI:
     Used to call various Gym service interfaces through socket connection
     """
 
-    def __init__(self, host: str = "localhost", port: int = 9999):
+    def __init__(self, host: str = "localhost", port: int = 16999):
         self._host = host
         self._port = port
 

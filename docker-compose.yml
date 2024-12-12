@@ -1,0 +1,43 @@
+version: "3.8"
+
+services:
+  core:
+    image: ghcr.io/jungheil/obgym_core:latest
+    container_name: obgym-core
+    ports:
+      - "16999:16999"
+    volumes:
+      - obgym-core-data:/app/db
+      - obgym-core-logs:/app/log
+    networks:
+      - obgym-network
+
+  backend:
+    image: ghcr.io/jungheil/obgym_app_backend:latest
+    container_name: obgym-app-backend
+    ports:
+      - "16998:16998"
+    environment:
+      - OBGYM_CORE_HOST=core
+      - OBGYM_CORE_PORT=16999
+    networks:
+      - obgym-network
+
+  frontend:
+    image: ghcr.io/jungheil/obgym_app_frontend:latest
+    container_name: obgym-app-frontend
+    ports:
+      - "16080:16080"
+    networks:
+      - obgym-network
+
+networks:
+  obgym-network:
+    name: obgym-network
+    driver: bridge
+
+volumes:
+  obgym-core-data:
+    name: obgym-core-data
+  obgym-core-logs:
+    name: obgym-core-logs

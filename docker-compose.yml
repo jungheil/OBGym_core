@@ -28,6 +28,9 @@ services:
     container_name: obgym-app-frontend
     ports:
       - "16080:16080"
+    environment:
+      - AUTH_USER=admin
+      - AUTH_PASS=admin
     networks:
       - obgym-network
 

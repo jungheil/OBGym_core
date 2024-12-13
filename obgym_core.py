@@ -13,7 +13,9 @@ import asyncio
 import json
 import logging
 import os
+import re
 import socket
+from typing import Dict, Optional
 
 from account_db import AccountSQLite
 from api.cas_api import CASLogin
@@ -52,8 +54,23 @@ class ColoredFormatter(logging.Formatter):
         return super().format(record)
 
 
+class SensitiveDataFilter(logging.Filter):
+    def filter(self, record):
+        pattern = r"""
+            (["']password["']:\s?["'])(\w*)(["'])
+            """
+        record.msg = re.sub(
+            pattern,
+            r"\1***\3",
+            record.msg,
+            flags=re.VERBOSE,
+        )
+        return True
+
+
 handler = logging.StreamHandler()
 handler.setFormatter(ColoredFormatter(LOG_FORMAT))
+handler.addFilter(SensitiveDataFilter())
 logging.root.addHandler(handler)
 
 headler = logging.FileHandler("log/core.log")
@@ -62,22 +79,31 @@ headler.setFormatter(
         "%(levelname)s:\t%(asctime)s [%(filename)s:%(lineno)d] - %(message)s"
     )
 )
+handler.addFilter(SensitiveDataFilter())
 logging.root.addHandler(headler)
 
 logging.root.setLevel(logging.DEBUG)
 
 
 class OBGymCore:
-    def __init__(self, host: str = "0.0.0.0", port: int = 16999) -> None:
+    def __init__(
+        self,
+        host: str = "0.0.0.0",
+        port: int = 16999,
+        proxies: Optional[Dict[str, str]] = None,
+    ) -> None:
         """
         Initialize the OBGymCore server.
 
         Args:
             host: Server host address
             port: Server port number
+            proxies: Optional proxy configuration dictionary for network requests
+                    Example: {"http": "http://proxy.com:8080", "https": "https://proxy.com:8080"}
         """
         self.host = host
         self.port = port
+        self.proxies = proxies
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.bind((self.host, self.port))
         self.server_socket.listen(5)
@@ -85,9 +111,9 @@ class OBGymCore:
         os.makedirs("db", exist_ok=True)
 
         self.db = AccountSQLite("db/accounts.db")
-        self.login = CASLogin()
-        self.gym = Gym()
-        self.job_manager = JobManager()
+        self.login = CASLogin(proxies=self.proxies)
+        self.gym = Gym(proxies=self.proxies)
+        self.job_manager = JobManager(proxies=self.proxies)
         self.job_manager.job_renew_account()
 
     @staticmethod
@@ -469,5 +495,16 @@ class OBGymCore:
 
 
 if __name__ == "__main__":
-    core = OBGymCore()
+    OBGYM_CORE_HOST = os.getenv("OBGYM_CORE_HOST", "0.0.0.0")
+    OBGYM_CORE_PORT = int(os.getenv("OBGYM_CORE_PORT", "16999"))
+    OBGYM_CORE_PROXY_HOST = os.getenv("OBGYM_CORE_PROXY_HOST", None)
+    OBGYM_CORE_PROXY_PORT = os.getenv("OBGYM_CORE_PROXY_PORT", None)
+    if OBGYM_CORE_PROXY_HOST and OBGYM_CORE_PROXY_PORT:
+        proxies = {
+            "http": f"http://{OBGYM_CORE_PROXY_HOST}:{OBGYM_CORE_PROXY_PORT}",
+            "https": f"http://{OBGYM_CORE_PROXY_HOST}:{OBGYM_CORE_PROXY_PORT}",
+        }
+    else:
+        proxies = None
+    core = OBGymCore(host=OBGYM_CORE_HOST, port=OBGYM_CORE_PORT, proxies=proxies)
     core.start()

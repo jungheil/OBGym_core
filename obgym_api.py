@@ -40,6 +40,14 @@ class JobType(int, Enum):
 @dataclass_json
 @dataclass
 class GymCampus:
+    """
+    Represents a gym campus location
+
+    Attributes:
+        name: Campus name
+        code: Campus unique identifier code
+    """
+
     name: str
     code: str
 
@@ -47,6 +55,14 @@ class GymCampus:
 @dataclass_json
 @dataclass
 class GymFacility:
+    """
+    Represents a gym facility within a campus
+
+    Attributes:
+        name: Facility name
+        serviceid: Facility service identifier
+    """
+
     name: str
     serviceid: str
 
@@ -54,6 +70,18 @@ class GymFacility:
 @dataclass_json
 @dataclass
 class GymArea:
+    """
+    Represents a specific area within a gym facility
+
+    Attributes:
+        sname: Area name
+        sdate: Booking date
+        timeno: Time slot number
+        serviceid: Facility service identifier
+        areaid: Area identifier
+        stockid: Stock identifier for booking
+    """
+
     sname: str
     sdate: str
     timeno: str
@@ -65,20 +93,31 @@ class GymArea:
 @dataclass_json
 @dataclass
 class GymOrder:
+    """
+    Represents a gym booking order
+
+    Attributes:
+        orderid: Order identifier
+        createdate: Order creation date
+    """
+
     orderid: str
     createdate: str
 
 
 @dataclass_json
 @dataclass
-class TaskTodo:
-    task_id: str
-    date: str
-
-
-@dataclass_json
-@dataclass
 class TaskResult:
+    """
+    Represents the result of a task
+
+    Attributes:
+        success: Task success status
+        message: Task message
+        data: Task data
+        created_at: Task creation date
+    """
+
     success: bool
     message: str
     data: dict
@@ -87,7 +126,39 @@ class TaskResult:
 
 @dataclass_json
 @dataclass
+class TaskTodo:
+    """
+    Represents a task to be performed
+
+    Attributes:
+        task_id: Task identifier
+        date: Task date
+    """
+
+    task_id: str
+    date: str
+
+
+@dataclass_json
+@dataclass
 class Job:
+    """
+    Represents a job to be performed
+
+    Attributes:
+        status: Job status
+        job_level: Job level
+        job_id: Job identifier
+        description: Job description
+        kwargs: Job parameters
+        job_type: Job type
+        result: List of task results
+        failed_count: Number of failed tasks
+        created_at: Job creation date
+        updated_at: Job update date
+        task_todo: Optional task to be performed
+    """
+
     status: JobStatus
     job_level: JobLevel
     job_id: str

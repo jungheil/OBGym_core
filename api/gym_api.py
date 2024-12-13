@@ -11,7 +11,7 @@
 
 import json
 import logging
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from curl_cffi import requests
 from lxml import etree
@@ -23,12 +23,16 @@ class GymAPI:
     Handles all direct HTTP interactions with the gym server
     """
 
-    def __init__(self) -> None:
+    def __init__(self, proxies: Optional[Dict[str, str]] = None) -> None:
         """
-        Initialize GymAPI client with default configurations
+        Initialize GymAPI client with default configurations.
+
+        Args:
+            proxies: Optional proxy configuration dictionary for network requests
+                    Example: {"http": "http://proxy.com:8080", "https": "https://proxy.com:8080"}
         """
         self._session = requests.AsyncSession()
-        self._proxies = None
+        self._proxies = proxies
         self._impersonate = "edge101"
 
     async def get_campus(self, cookies: Dict[str, str]) -> List[Tuple[str, str]]:
@@ -251,6 +255,7 @@ class GymAPI:
                 data=data,
                 cookies=cookies,
                 impersonate="edge101",
+                proxies=self._proxies,
             )
         logging.debug("gym_api.book get response: %s", response.text)
         return response.json()
@@ -348,9 +353,61 @@ class GymAPI:
                 data=data,
                 cookies=cookies,
                 impersonate="edge101",
+                proxies=self._proxies,
             )
         logging.debug("gym_api.del_order get response: %s", response.text)
         return response.json()
 
+    async def get_orders(
+        self, page: int, rows: int, cookies: Dict[str, str]
+    ) -> List[Dict[str, Any]]:
+        """
+        Get list of booking orders
 
-## TODO 获取全部order
+        Args:
+            page: Page number
+            rows: Number of rows per page
+            cookies: Authentication cookies for the request
+
+        Returns:
+            Dictionary containing order information
+        """
+        headers = {
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Connection": "keep-alive",
+            "DNT": "1",
+            "Referer": "https://gym.sysu.edu.cn/app/yyuser/personal.html",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36 Edg/129.0.0.0",
+            "sec-ch-ua": '"Microsoft Edge";v="101", "Not=A?Brand";v="8", "Chromium";v="101"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+        }
+        params = {
+            "page": str(page),
+            "rows": str(rows),
+            "status": "",
+            "iscomment": "",
+            "stockSDate": "",
+            "stockEDate": "",
+        }
+        logging.debug(
+            "gym_api.get_orders request info:\nheaders: %s\nparams: %s\ncookies: %s",
+            headers,
+            params,
+            cookies,
+        )
+        async with requests.AsyncSession() as s:
+            response = await s.get(
+                "https://gym.sysu.edu.cn/app/yyuser/searchorder.html",
+                headers=headers,
+                params=params,
+                cookies=cookies,
+                impersonate=self._impersonate,
+                proxies=self._proxies,
+            )
+        logging.debug("gym_api.get_orders get response: %s", response.text)
+        return response.json()

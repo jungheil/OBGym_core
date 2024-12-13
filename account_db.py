@@ -9,12 +9,16 @@
 # PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+import base64
 import logging
 import sqlite3
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple, Union
 
 import pytz
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 
 class AccountSQLite:
@@ -31,6 +35,18 @@ class AccountSQLite:
             db_name: Path to SQLite database file
         """
         self.db_name = db_name
+
+        salt = b"0e1dbefc-f2bd-42f9-b139-d85cf3f6b729"
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=salt,
+            iterations=100000,
+        )
+        key = base64.urlsafe_b64encode(
+            kdf.derive(b"6663ee1a-8c55-44a3-a2b5-6cbb08b1f3cb")
+        )
+        self.cipher_suite = Fernet(key)
         self.conn = self.create_connection()
         self.create_table_if_not_exists()
 
@@ -88,12 +104,14 @@ class AccountSQLite:
             logging.warning("Account with this username already exists.")
             return False
 
+        encrypted_password = self.cipher_suite.encrypt(password.encode())
+
         cursor.execute(
             """
             INSERT INTO accounts (username, password)
             VALUES (?, ?)
         """,
-            (username, password),
+            (username, encrypted_password),
         )
         self.conn.commit()
 
@@ -192,7 +210,13 @@ class AccountSQLite:
             """
             )
         rows = cursor.fetchall()
-        return rows
+
+        decrypted_rows = []
+        for row in rows:
+            decrypted_row = list(row)
+            decrypted_row[2] = self._decrypt_password(row[2])  # 解密密码字段
+            decrypted_rows.append(tuple(decrypted_row))
+        return decrypted_rows
 
     def get_all_accounts(self) -> List[Tuple]:
         """
@@ -209,7 +233,13 @@ class AccountSQLite:
         """
         )
         rows = cursor.fetchall()
-        return rows
+
+        decrypted_rows = []
+        for row in rows:
+            decrypted_row = list(row)
+            decrypted_row[2] = self._decrypt_password(row[2])
+            decrypted_rows.append(tuple(decrypted_row))
+        return decrypted_rows
 
     def get_valid_account(self) -> List[Tuple]:
         """
@@ -226,9 +256,14 @@ class AccountSQLite:
             WHERE valid = 1
         """
         )
-
         rows = cursor.fetchall()
-        return rows
+
+        decrypted_rows = []
+        for row in rows:
+            decrypted_row = list(row)
+            decrypted_row[2] = self._decrypt_password(row[2])
+            decrypted_rows.append(tuple(decrypted_row))
+        return decrypted_rows
 
     def get_timeout_account(self, timeout: Union[int, float]) -> List[Tuple]:
         """
@@ -250,12 +285,29 @@ class AccountSQLite:
             WHERE last_updated < ?
         """
         cursor.execute(query, (timeout_str,))
-
         rows = cursor.fetchall()
-        return rows
+
+        decrypted_rows = []
+        for row in rows:
+            decrypted_row = list(row)
+            decrypted_row[2] = self._decrypt_password(row[2])
+            decrypted_rows.append(tuple(decrypted_row))
+        return decrypted_rows
 
     def close_connection(self) -> None:
         """
         Close the database connection
         """
         self.conn.close()
+
+    def _decrypt_password(self, encrypted_password: bytes) -> str:
+        """
+        decrypt password
+
+        Args:
+            encrypted_password: Encrypted password
+
+        Returns:
+            str: Decrypted password
+        """
+        return self.cipher_suite.decrypt(encrypted_password).decode()

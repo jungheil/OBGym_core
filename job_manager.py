@@ -16,8 +16,9 @@ import logging
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, time, timedelta
 from enum import Enum
+from time import sleep
 from typing import Any, Callable, Dict, List, Optional
 
 import pytz
@@ -26,8 +27,7 @@ from dataclasses_json import dataclass_json
 
 from account_db import AccountSQLite
 from api.cas_api import CASLogin
-from gym import Gym, GymArea
-
+from gym import Gym, GymArea, GymOrder
 
 CHINA_TIMEZONE = pytz.timezone("Asia/Shanghai")
 
@@ -54,7 +54,19 @@ class JobType(int, Enum):
 @dataclass_json
 @dataclass
 class TaskResult:
+    """
+    Represents the result of a task
+
+    Attributes:
+        success: Task success status
+        code: Task status code
+        message: Task message
+        data: Task data
+        created_at: Task creation date
+    """
+
     success: bool
+    code: int
     message: str
     data: Dict
     created_at: str = field(
@@ -67,6 +79,14 @@ class TaskResult:
 @dataclass_json
 @dataclass
 class TaskTodo:
+    """
+    Represents a task to be performed
+
+    Attributes:
+        task_id: Task identifier
+        date: Task date
+    """
+
     task_id: str
     date: str
 
@@ -74,6 +94,23 @@ class TaskTodo:
 @dataclass_json
 @dataclass
 class Job:
+    """
+    Represents a job to be performed
+
+    Attributes:
+        status: Job status
+        job_level: Job level
+        job_id: Job identifier
+        description: Job description
+        kwargs: Job parameters
+        job_type: Job type
+        result: List of task results
+        failed_count: Number of failed tasks
+        created_at: Job creation date
+        updated_at: Job update date
+        task_todo: Optional task to be performed
+    """
+
     status: JobStatus
     job_level: JobLevel
     job_id: str
@@ -96,7 +133,7 @@ class Job:
 
 
 async def _task_update_account(
-    username: str, password: str
+    username: str, password: str, proxies: Optional[Dict[str, str]] = None
 ) -> Dict[str, Dict[str, str]]:
     """
     Update account cookies by performing a new login.
@@ -110,7 +147,7 @@ async def _task_update_account(
         Example: {username: {cookie_name: cookie_value}}
     """
     try:
-        login = CASLogin()
+        login = CASLogin(proxies=proxies)
         response = await login.get(
             username,
             password,
@@ -132,7 +169,9 @@ async def _task_update_account(
         return {username: {}}
 
 
-async def _task_update_expired_accounts() -> Dict[str, Dict[str, str]]:
+async def _task_update_expired_accounts(
+    proxies: Optional[Dict[str, str]] = None
+) -> Dict[str, Dict[str, str]]:
     """
     Update cookies for all expired accounts.
 
@@ -144,7 +183,8 @@ async def _task_update_expired_accounts() -> Dict[str, Dict[str, str]]:
         db = AccountSQLite("db/accounts.db")
         expired_accounts = db.get_timeout_account(2)
         tasks = [
-            _task_update_account(account[1], account[2]) for account in expired_accounts
+            _task_update_account(account[1], account[2], proxies=proxies)
+            for account in expired_accounts
         ]
         data = await asyncio.gather(*tasks)
         return {k: v for d in data for k, v in d.items()}
@@ -153,32 +193,46 @@ async def _task_update_expired_accounts() -> Dict[str, Dict[str, str]]:
         return {}
 
 
-def task_update_account(username: str, password: str) -> Dict[str, Dict[str, str]]:
+def task_update_account(
+    username: str, password: str, proxies: Optional[Dict[str, str]] = None
+) -> Dict[str, Dict[str, str]]:
     """
     Synchronous wrapper for _task_update_account.
 
     Args:
         username: Account username
         password: Account password
+        proxies: Optional proxy configuration dictionary for network requests
+                Example: {"http": "http://proxy.com:8080", "https": "https://proxy.com:8080"}
 
     Returns:
         Dict containing username and cookies mapping
     """
-    return asyncio.run(_task_update_account(username, password))
+    return asyncio.run(_task_update_account(username, password, proxies))
 
 
-def task_update_expired_accounts() -> Dict[str, Dict[str, str]]:
+def task_update_expired_accounts(
+    proxies: Optional[Dict[str, str]] = None
+) -> Dict[str, Dict[str, str]]:
     """
     Synchronous wrapper for _task_update_expired_accounts.
+
+    Args:
+        proxies: Optional proxy configuration dictionary for network requests
+                Example: {"http": "http://proxy.com:8080", "https": "https://proxy.com:8080"}
 
     Returns:
         Dict mapping usernames to their new cookies
     """
-    return asyncio.run(_task_update_expired_accounts())
+    return asyncio.run(_task_update_expired_accounts(proxies))
 
 
 def task_book(
-    area: Dict[str, Any], username: str, renew_account: bool = False
+    area: Dict[str, Any],
+    username: str,
+    renew_account: bool = False,
+    check_order: Optional[Dict[str, Any]] = None,
+    proxies: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """
     Book a gym area for a user.
@@ -187,6 +241,9 @@ def task_book(
         area: Area information dictionary
         username: Account username
         renew_account: Whether to renew account cookies before booking
+        check_order: Order to check, if not None, will check order status before booking
+        proxies: Optional proxy configuration dictionary for network requests
+                Example: {"http": "http://proxy.com:8080", "https": "https://proxy.com:8080"}
 
     Returns:
         Dict containing booking result information
@@ -204,7 +261,9 @@ def task_book(
         cookies = {}
         for i in range(3):
             logging.info("Trying to update account %s, attempt %d", username, i + 1)
-            ret = asyncio.run(_task_update_account(username, account_data[0][2]))
+            ret = asyncio.run(
+                _task_update_account(username, account_data[0][2], proxies)
+            )
             cookies = ret.get(username, {})
             if cookies:
                 break
@@ -214,7 +273,18 @@ def task_book(
         cookies_str = account_data[0][3]
         cookies = json.loads(cookies_str)
 
-    gym = Gym()
+    gym = Gym(proxies=proxies)
+    if check_order:
+        for i in range(60):
+            status = asyncio.run(
+                gym.get_orders_status(GymOrder.from_dict(check_order), cookies)
+            )
+            if status is None or status != 0:
+                break
+            logging.info(f"Order still not finished, sleep 30s, status: {status}")
+            sleep(30)
+        if status == 0:
+            raise RuntimeError(f"Order status unexpected, status: {status}")
     ret = asyncio.run(gym.book(area, cookies))
     return ret.to_dict() if ret else {}
 
@@ -491,21 +561,26 @@ class JobSQLite:
 
 
 class JobManager:
-    def __init__(self) -> None:
+    def __init__(self, proxies: Optional[Dict[str, str]] = None) -> None:
         """
         Initialize JobManager with scheduler and job database.
         Sets up scheduler and resumes existing jobs.
+
+        Args:
+            proxies: Optional proxy configuration dictionary for network requests
+                    Example: {"http": "http://proxy.com:8080", "https": "https://proxy.com:8080"}
         """
+        self.proxies = proxies
         self.scheduler = BackgroundScheduler()
         self.scheduler.start()
         self.job_db_path = "db/jobs.db"
         self.not_execute_time = [(time(22, 0, 0, 0), time(23, 59, 59, 999999))]
+        self.fluctuate_time = [(time(0, 0, 0, 0), time(0, 20, 0, 0))]
         self._resume()
 
     def __del__(self):
         self.scheduler.shutdown()
 
-    # 恢复任务
     def _resume(self) -> None:
         """Resume all existing jobs from database."""
         self.remove_all_main_jobs()
@@ -518,20 +593,29 @@ class JobManager:
 
         for job in jobs.values():
             if job.task_todo is not None:
+                job.kwargs["proxies"] = self.proxies
                 task_func = self.task_wrapper(
                     task_book, self._job_only_book_hook(job.job_id), job.kwargs
                 )
-                self.scheduler.add_job(
-                    task_func,
-                    "date",
-                    run_date=job.task_todo.date,
-                    timezone=CHINA_TIMEZONE,
-                    id=job.task_todo.task_id,
-                )
+                now = datetime.now(CHINA_TIMEZONE) + timedelta(seconds=5)
+                run_time = datetime.strptime(
+                    job.task_todo.date, "%Y-%m-%d %H:%M:%S"
+                ).replace(tzinfo=CHINA_TIMEZONE)
+                if run_time <= now:
+                    job.status = JobStatus.FAILED
+                    job_db.update_job(job)
+                else:
+                    self.scheduler.add_job(
+                        task_func,
+                        "date",
+                        run_date=job.task_todo.date,
+                        timezone=CHINA_TIMEZONE,
+                        id=job.task_todo.task_id,
+                    )
         jobs = job_db.get_all_jobs(job_type=JobType.BOOK, status=JobStatus.RETRY)
         for job in jobs.values():
             job.status = JobStatus.FAILED
-            job.task_todo = None
+            job.kwargs["proxies"] = self.proxies
             job_db.update_job(job)
 
     def remove_job(self, job_id: str) -> None:
@@ -605,6 +689,7 @@ class JobManager:
             "area": area.to_dict(),
             "username": username,
             "renew_account": renew_account,
+            "proxies": self.proxies,
         }
         description = f"book {area.sname} {area.sdate} {area.timeno}"
         job = Job(
@@ -628,9 +713,11 @@ class JobManager:
         if sdate < today:
             raise RuntimeError("Invalid sdate")
         if sdate > today + timedelta(days=1):
-            run_date = datetime.strptime(area.sdate, "%Y-%m-%d").replace(
-                tzinfo=CHINA_TIMEZONE
-            ) + timedelta(seconds=3)
+            run_date = (
+                datetime.strptime(area.sdate, "%Y-%m-%d").replace(tzinfo=CHINA_TIMEZONE)
+                + timedelta(seconds=3)
+                - timedelta(days=1)
+            )
         else:
             run_date = datetime.now(CHINA_TIMEZONE) + timedelta(seconds=3)
         task_id = str(uuid.uuid4())
@@ -682,20 +769,26 @@ class JobManager:
                 job_db.update_job(job)
                 return job_id
 
-            task_func = self.task_wrapper(
-                task_book,
-                self._job_only_book_hook(job_id),
-                job.kwargs,
-            )
-
             if result.success:
                 job.failed_count = 0
                 job.status = JobStatus.RUNNING
-                run_date = datetime.now(CHINA_TIMEZONE) + timedelta(minutes=30)
+                if result.code == 1:
+                    run_date = datetime.strptime(
+                        result.data["next_exec_time"], "%Y-%m-%d %H:%M:%S"
+                    )
+                    job.kwargs["check_order"] = None
+                else:
+                    run_date = datetime.now(CHINA_TIMEZONE) + timedelta(minutes=30)
+                    job.kwargs["check_order"] = result.data
                 task_id = str(uuid.uuid4())
                 job.task_todo = TaskTodo(
                     task_id,
                     run_date.strftime("%Y-%m-%d %H:%M:%S"),
+                )
+                task_func = self.task_wrapper(
+                    task_book,
+                    self._job_only_book_hook(job_id),
+                    job.kwargs,
                 )
                 self.scheduler.add_job(
                     task_func,
@@ -706,7 +799,12 @@ class JobManager:
                 )
                 job_db.update_job(job)
             else:
-                if job.failed_count >= 2:
+                fluctuation = False
+                for start, end in self.fluctuate_time:
+                    if start <= datetime.now(CHINA_TIMEZONE).time() <= end:
+                        fluctuation = True
+                        break
+                if job.failed_count >= 2 and not fluctuation:
                     job.failed_count += 1
                     job.status = JobStatus.FAILED
                     job_db.update_job(job)
@@ -718,6 +816,12 @@ class JobManager:
                     job.task_todo = TaskTodo(
                         task_id,
                         run_date.strftime("%Y-%m-%d %H:%M:%S"),
+                    )
+                    job.kwargs["check_order"] = {}
+                    task_func = self.task_wrapper(
+                        task_book,
+                        self._job_only_book_hook(job_id),
+                        job.kwargs,
                     )
                     self.scheduler.add_job(
                         task_func,
@@ -750,7 +854,9 @@ class JobManager:
         )
 
         task_func = self.task_wrapper(
-            task_update_expired_accounts, self._job_renew_account_hook(job_id), {}
+            task_update_expired_accounts,
+            self._job_renew_account_hook(job_id),
+            {"proxies": self.proxies},
         )
         run_date = datetime.now(CHINA_TIMEZONE) + timedelta(seconds=3)
         task_id = str(uuid.uuid4())
@@ -794,7 +900,9 @@ class JobManager:
             job.task_todo = None
 
             task_func = self.task_wrapper(
-                task_update_expired_accounts, self._job_renew_account_hook(job_id), {}
+                task_update_expired_accounts,
+                self._job_renew_account_hook(job_id),
+                {"proxies": self.proxies},
             )
 
             if result.success:
@@ -854,16 +962,35 @@ class JobManager:
             now = datetime.now(CHINA_TIMEZONE)
             for start, end in self.not_execute_time:
                 if start <= now.time() <= end:
-                    logging.info("Task %s not executed at %s", func.__name__, now)
-                    return
+                    next_execute_time = now.replace(
+                        hour=end.hour, minute=end.minute, second=end.second
+                    ) + timedelta(seconds=3)
+                    logging.info(
+                        "Not in work time, skip task %s, next execute time: %s",
+                        func.__name__,
+                        next_execute_time,
+                    )
+
+                    ret = TaskResult(
+                        True,
+                        1,
+                        f"Not in work time, skip task {func.__name__}",
+                        {
+                            "next_exec_time": next_execute_time.strftime(
+                                "%Y-%m-%d %H:%M:%S"
+                            )
+                        },
+                    )
+                    hook_func(ret)
+                    return ret
             logging.info("Task %s started with kwargs: %s", func.__name__, kwargs)
             try:
                 data = func(**kwargs)
-                ret = TaskResult(True, "", data)
+                ret = TaskResult(True, 0, "", data)
                 logging.info("Task %s executed successfully: %s", func.__name__, data)
             except Exception as e:
                 logging.error("Task %s failed: %s", func.__name__, str(e))
-                ret = TaskResult(False, f"Task {func.__name__} failed: {str(e)}", {})
+                ret = TaskResult(False, 2, f"Task {func.__name__} failed: {str(e)}", {})
             hook_func(ret)
             return ret
 

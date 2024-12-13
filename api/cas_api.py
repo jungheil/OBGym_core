@@ -25,15 +25,19 @@ class CASLogin:
     Manages authentication process including captcha recognition
     """
 
-    def __init__(self) -> None:
+    def __init__(self, proxies: Optional[Dict[str, str]] = None) -> None:
         """
-        Initialize CAS login handler with necessary components
-        Sets up session, OCR tool, and default configurations
+        Initialize CAS login handler with necessary components.
+        Sets up session, OCR tool, and default configurations.
+
+        Args:
+            proxies: Optional proxy configuration dictionary for network requests
+                    Example: {"http": "http://proxy.com:8080", "https": "https://proxy.com:8080"}
         """
         self._session = requests.AsyncSession()
         self._ocr = ddddocr.DdddOcr(beta=True, show_ad=False)
 
-        self._proxies = None
+        self._proxies = proxies
         self._impersonate = "edge101"
 
         self._cookies: Optional[Dict[str, str]] = None
@@ -196,6 +200,7 @@ class CASLogin:
                 data=data,
                 cookies=self._cookies,
                 impersonate="edge101",
+                proxies=self._proxies,
             )
         logging.debug("cas_api._login get response: %s", response.text)
         return response

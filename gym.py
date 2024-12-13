@@ -10,7 +10,7 @@
 # See the Mulan PSL v2 for more details.
 
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from dataclasses_json import dataclass_json
 
@@ -90,11 +90,11 @@ class Gym:
     Main class for handling gym-related operations
     """
 
-    def __init__(self) -> None:
+    def __init__(self, proxies: Optional[Dict[str, str]] = None) -> None:
         """
         Initialize Gym instance with API client
         """
-        self._api = GymAPI()
+        self._api = GymAPI(proxies=proxies)
 
     async def get_campus(self, cookie: Dict[str, str]) -> List[GymCampus]:
         """
@@ -181,3 +181,22 @@ class Gym:
             )
         else:
             raise RuntimeError(f"Book failed, api return: {data}")
+
+    async def get_orders_status(
+        self, order: GymOrder, cookies: Dict[str, str]
+    ) -> Optional[int]:
+        """
+        Get the status of a specific order
+
+        Args:
+            order: GymOrder object representing the order to check
+            cookies: Authentication cookies for API request
+
+        Returns:
+            Status of the order or None if not found
+        """
+        data = await self._api.get_orders(1, 8, cookies)
+        for od in data:
+            if od["orderid"] == order.orderid:
+                return od["status"]
+        return None

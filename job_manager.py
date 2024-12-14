@@ -748,194 +748,88 @@ class JobManager:
             Callable that processes booking result and updates job status
         """
 
-        def hook(result):
-            job_db = JobSQLite(self.job_db_path)
-
-            job = job_db.get_job(job_id)
-            if not job:
-                return
-
-            job.result.append(result)
-            job.task_todo = None
-
+        def _schedule_next_task(self, job, job_id, run_date):
             time_str = job.kwargs["area"]["timeno"].strip().split("-")[1]
             date_str = job.kwargs["area"]["sdate"]
             end_time = datetime.strptime(
                 f"{date_str} {time_str}", "%Y-%m-%d %H:%M"
             ).replace(tzinfo=CHINA_TIMEZONE)
 
-            if end_time < datetime.now(CHINA_TIMEZONE):
+            if end_time < run_date:
                 job.status = JobStatus.SUCCESS
-                job_db.update_job(job)
-                return job_id
+                job.task_todo = None
+                return job
 
-            if result.success:
-                job.failed_count = 0
-                job.status = JobStatus.RUNNING
-                if result.code == 1:
-                    run_date = datetime.strptime(
-                        result.data["next_exec_time"], "%Y-%m-%d %H:%M:%S"
-                    )
-                    job.kwargs["check_order"] = None
-                else:
-                    run_date = datetime.now(CHINA_TIMEZONE) + timedelta(minutes=30)
-                    job.kwargs["check_order"] = result.data
-                task_id = str(uuid.uuid4())
-                job.task_todo = TaskTodo(
-                    task_id,
-                    run_date.strftime("%Y-%m-%d %H:%M:%S"),
+            task_id = str(uuid.uuid4())
+            job.task_todo = TaskTodo(
+                task_id,
+                run_date.strftime("%Y-%m-%d %H:%M:%S"),
+            )
+
+            task_func = self.task_wrapper(
+                task_book,
+                self._job_only_book_hook(job_id),
+                job.kwargs,
+            )
+
+            self.scheduler.add_job(
+                task_func,
+                "date",
+                run_date=run_date,
+                timezone=CHINA_TIMEZONE,
+                id=task_id,
+            )
+            return job
+
+        def _handle_success(self, job, job_id, run_date):
+            job.failed_count = 0
+            job.status = JobStatus.RUNNING
+            if result.code == 1:
+                run_date = datetime.strptime(
+                    result.data["next_exec_time"], "%Y-%m-%d %H:%M:%S"
                 )
-                task_func = self.task_wrapper(
-                    task_book,
-                    self._job_only_book_hook(job_id),
-                    job.kwargs,
-                )
-                self.scheduler.add_job(
-                    task_func,
-                    "date",
-                    run_date=run_date,
-                    timezone=CHINA_TIMEZONE,
-                    id=task_id,
-                )
-                job_db.update_job(job)
+                job.kwargs["check_order"] = None
             else:
-                fluctuation = False
-                for start, end in self.fluctuate_time:
-                    if start <= datetime.now(CHINA_TIMEZONE).time() <= end:
-                        fluctuation = True
-                        break
-                if job.failed_count >= 2 and not fluctuation:
-                    job.failed_count += 1
-                    job.status = JobStatus.FAILED
-                    job_db.update_job(job)
-                else:
-                    job.status = JobStatus.RETRY
-                    job.failed_count += 1
-                    run_date = datetime.now(CHINA_TIMEZONE) + timedelta(seconds=20)
-                    task_id = str(uuid.uuid4())
-                    job.task_todo = TaskTodo(
-                        task_id,
-                        run_date.strftime("%Y-%m-%d %H:%M:%S"),
-                    )
-                    job.kwargs["check_order"] = {}
-                    task_func = self.task_wrapper(
-                        task_book,
-                        self._job_only_book_hook(job_id),
-                        job.kwargs,
-                    )
-                    self.scheduler.add_job(
-                        task_func,
-                        "date",
-                        run_date=run_date,
-                        timezone=CHINA_TIMEZONE,
-                        id=task_id,
-                    )
-                    job_db.update_job(job)
-            return job_id
+                run_date = datetime.now(CHINA_TIMEZONE) + timedelta(minutes=30)
+                job.kwargs["check_order"] = result.data
 
-        return hook
+            return self._schedule_next_task(job, job_id, run_date)
 
-    def job_renew_account(self) -> str:
-        """
-        Create account renewal job.
+        def _handle_failed(self, job, job_id, run_date):
+            fluctuation = False
+            for start, end in self.fluctuate_time:
+                if start <= datetime.now(CHINA_TIMEZONE).time() <= end:
+                    fluctuation = True
+                    break
+            if job.failed_count >= 2 and not fluctuation:
+                job.failed_count += 1
+                job.status = JobStatus.FAILED
+                return job
+            else:
+                job.status = JobStatus.RETRY
+                job.failed_count += 1
+                run_date = datetime.now(CHINA_TIMEZONE) + timedelta(seconds=20)
 
-        Returns:
-            str: ID of created job
-        """
-        job_db = JobSQLite(self.job_db_path)
-        job_id = str(uuid.uuid4())
-        job = Job(
-            JobStatus.RUNNING,
-            JobLevel.MAIN,
-            job_id,
-            "renew account",
-            {},
-            job_type=JobType.RENEW,
-        )
-
-        task_func = self.task_wrapper(
-            task_update_expired_accounts,
-            self._job_renew_account_hook(job_id),
-            {"proxies": self.proxies},
-        )
-        run_date = datetime.now(CHINA_TIMEZONE) + timedelta(seconds=3)
-        task_id = str(uuid.uuid4())
-
-        job.task_todo = TaskTodo(
-            task_id,
-            run_date.strftime("%Y-%m-%d %H:%M:%S"),
-        )
-
-        self.scheduler.add_job(
-            task_func,
-            "date",
-            run_date=run_date,
-            timezone=CHINA_TIMEZONE,
-            id=task_id,
-        )
-        job_db.add_job(job)
-
-        return job_id
-
-    def _job_renew_account_hook(self, job_id: str) -> Callable[[TaskResult], None]:
-        """
-        Create hook function for account renewal job.
-
-        Args:
-            job_id: ID of associated job
-
-        Returns:
-            Callable that processes renewal result and schedules next renewal
-        """
+                return _schedule_next_task(job, job_id, run_date)
 
         def hook(result):
             job_db = JobSQLite(self.job_db_path)
 
-            job_db = JobSQLite("db/jobs.db")
             job = job_db.get_job(job_id)
             if not job:
-                return
+                logging.error("Job not found, id: %s", job_id)
+                return -1
 
             job.result.append(result)
             job.task_todo = None
 
-            task_func = self.task_wrapper(
-                task_update_expired_accounts,
-                self._job_renew_account_hook(job_id),
-                {"proxies": self.proxies},
-            )
-
             if result.success:
-                next_date = datetime.now(CHINA_TIMEZONE) + timedelta(hours=2)
-                task_id = str(uuid.uuid4())
-                job.task_todo = TaskTodo(
-                    task_id,
-                    next_date.strftime("%Y-%m-%d %H:%M:%S"),
-                )
-                self.scheduler.add_job(
-                    task_func,
-                    "date",
-                    run_date=next_date,
-                    timezone=CHINA_TIMEZONE,
-                    id=task_id,
-                )
+                job = _handle_success(job, job_id, run_date)
                 job_db.update_job(job)
-
             else:
-                next_date = datetime.now(CHINA_TIMEZONE) + timedelta(minutes=30)
-                task_id = str(uuid.uuid4())
-                job.task_todo = TaskTodo(
-                    task_id,
-                    next_date.strftime("%Y-%m-%d %H:%M:%S"),
-                )
-                self.scheduler.add_job(
-                    task_func,
-                    "date",
-                    run_date=next_date,
-                    timezone=CHINA_TIMEZONE,
-                    id=task_id,
-                )
+                job = _handle_failed(job, job_id, run_date)
                 job_db.update_job(job)
+            return job_id
 
         return hook
 

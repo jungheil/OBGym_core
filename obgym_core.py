@@ -114,7 +114,6 @@ class OBGymCore:
         self.login = CASLogin(proxies=self.proxies)
         self.gym = Gym(proxies=self.proxies)
         self.job_manager = JobManager(proxies=self.proxies)
-        self.job_manager.job_renew_account()
 
     @staticmethod
     def make_response(status: int, data: dict, message: str) -> bytes:

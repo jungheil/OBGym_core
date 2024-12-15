@@ -49,6 +49,7 @@ class JobType(int, Enum):
     UNKNOW = 0
     RENEW = 1
     BOOK = 2
+    BOOK_AND_PAY = 3
 
 
 @dataclass_json
@@ -227,7 +228,62 @@ def task_update_expired_accounts(
     return asyncio.run(_task_update_expired_accounts(proxies))
 
 
-def task_book(
+def task_book_and_pay(
+    area: Dict[str, Any],
+    username: str,
+    renew_account: bool = False,
+    proxies: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """
+    Book a gym area for a user and pay for it.
+
+    Args:
+        area (Dict[str, Any]): Gym area information
+        username (str): Account username
+        renew_account (bool, optional): Whether to renew account cookies before booking
+        proxies (Optional[Dict[str, str]], optional): Optional proxy configuration dictionary for network requests
+                Example: {"http": "http://proxy.com:8080", "https": "https://proxy.com:8080"}
+
+    Raises:
+        RuntimeError: If account not found or renewal fails
+
+    Returns:
+        Dict[str, Any]: Gym order information
+    """
+    area = GymArea.from_dict(area)
+    db = AccountSQLite("db/accounts.db")
+    account_data = db.query_accounts(username)
+    if not account_data:
+        raise RuntimeError("Account not found")
+
+    if renew_account:
+        cookies = {}
+        for i in range(3):
+            logging.info("Trying to update account %s, attempt %d", username, i + 1)
+            ret = asyncio.run(
+                _task_update_account(username, account_data[0][2], proxies)
+            )
+            cookies = ret.get(username, {})
+            if cookies:
+                break
+        if not cookies:
+            raise RuntimeError("Failed to renew account")
+    else:
+        cookies_str = account_data[0][3]
+        cookies = json.loads(cookies_str)
+
+    gym = Gym(proxies=proxies)
+
+    async def book_and_pay(area: GymArea, cookies: Dict[str, str]) -> GymOrder:
+        order = await gym.book(area, cookies)
+        await gym.pay(order, cookies)
+        return order
+
+    order = asyncio.run(book_and_pay(area, cookies))
+    return order.to_dict()
+
+
+def task_only_book(
     area: Dict[str, Any],
     username: str,
     renew_account: bool = False,
@@ -286,7 +342,7 @@ def task_book(
         if status == 0:
             raise RuntimeError(f"Order status unexpected, status: {status}")
     ret = asyncio.run(gym.book(area, cookies))
-    return ret.to_dict() if ret else {}
+    return ret.to_dict()
 
 
 class JobSQLite:
@@ -584,39 +640,13 @@ class JobManager:
     def _resume(self) -> None:
         """Resume all existing jobs from database."""
         self.remove_all_main_jobs()
-        self._resume_book_job()
-
-    def _resume_book_job(self) -> None:
-        """Resume existing booking jobs from database."""
-        job_db = JobSQLite(self.job_db_path)
-        jobs = job_db.get_all_jobs(job_type=JobType.BOOK, status=JobStatus.RUNNING)
-
-        for job in jobs.values():
-            if job.task_todo is not None:
-                job.kwargs["proxies"] = self.proxies
-                task_func = self.task_wrapper(
-                    task_book, self._job_only_book_hook(job.job_id), job.kwargs
-                )
-                now = datetime.now(CHINA_TIMEZONE) + timedelta(seconds=5)
-                run_time = datetime.strptime(
-                    job.task_todo.date, "%Y-%m-%d %H:%M:%S"
-                ).replace(tzinfo=CHINA_TIMEZONE)
-                if run_time <= now:
-                    job.status = JobStatus.FAILED
-                    job_db.update_job(job)
-                else:
-                    self.scheduler.add_job(
-                        task_func,
-                        "date",
-                        run_date=job.task_todo.date,
-                        timezone=CHINA_TIMEZONE,
-                        id=job.task_todo.task_id,
-                    )
-        jobs = job_db.get_all_jobs(job_type=JobType.BOOK, status=JobStatus.RETRY)
-        for job in jobs.values():
-            job.status = JobStatus.FAILED
-            job.kwargs["proxies"] = self.proxies
-            job_db.update_job(job)
+        resume_func = [
+            f
+            for f in dir(self)
+            if f.startswith("_resume_") and callable(getattr(self, f))
+        ]
+        for func in resume_func:
+            getattr(self, func)()
 
     def remove_job(self, job_id: str) -> None:
         """
@@ -666,6 +696,163 @@ class JobManager:
         for job in jobs.values():
             job_db.delete_job(job.job_id)
 
+    def job_book_and_pay(
+        self, area: GymArea, username: str, renew_account: bool = True
+    ) -> str:
+        """
+        Create a booking and payment job.
+        """
+        job_db = JobSQLite(self.job_db_path)
+        job_id = str(uuid.uuid4())
+        kwargs = {
+            "area": area.to_dict(),
+            "username": username,
+            "renew_account": renew_account,
+            "proxies": self.proxies,
+        }
+        description = f"book & pay {area.sname} {area.sdate} {area.timeno}"
+        job = Job(
+            JobStatus.RUNNING,
+            JobLevel.USER,
+            job_id,
+            description,
+            kwargs,
+            job_type=JobType.BOOK_AND_PAY,
+        )
+
+        task_func = self.task_wrapper(
+            task_book_and_pay, self._job_book_and_pay_hook(job_id), kwargs
+        )
+        sdate = (
+            datetime.strptime(area.sdate, "%Y-%m-%d")
+            .replace(tzinfo=CHINA_TIMEZONE)
+            .date()
+        )
+        today = datetime.now(CHINA_TIMEZONE).date()
+        if sdate < today:
+            raise RuntimeError("Invalid sdate")
+        if sdate > today + timedelta(days=1):
+            run_date = (
+                datetime.strptime(area.sdate, "%Y-%m-%d").replace(tzinfo=CHINA_TIMEZONE)
+                + timedelta(seconds=3)
+                - timedelta(days=1)
+            )
+        else:
+            run_date = datetime.now(CHINA_TIMEZONE) + timedelta(seconds=3)
+        task_id = str(uuid.uuid4())
+
+        job.task_todo = TaskTodo(
+            task_id,
+            run_date.strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
+        self.scheduler.add_job(
+            task_func,
+            "date",
+            run_date=run_date,
+            timezone=CHINA_TIMEZONE,
+            id=task_id,
+        )
+        job_db.add_job(job)
+        return job_id
+
+    def _job_book_and_pay_hook(self, job_id: str) -> Callable[[TaskResult], str]:
+        """
+        Create hook function for booking job.
+
+        Args:
+            job_id: ID of associated job
+
+        Returns:
+            Callable that processes booking result and updates job status
+        """
+
+        def _schedule_next_task(self, job, job_id, run_date):
+            time_str = job.kwargs["area"]["timeno"].strip().split("-")[1]
+            date_str = job.kwargs["area"]["sdate"]
+            end_time = datetime.strptime(
+                f"{date_str} {time_str}", "%Y-%m-%d %H:%M"
+            ).replace(tzinfo=CHINA_TIMEZONE)
+
+            if end_time < run_date:
+                job.status = JobStatus.FAILED
+                job.task_todo = None
+                return job
+
+            task_id = str(uuid.uuid4())
+            job.task_todo = TaskTodo(
+                task_id,
+                run_date.strftime("%Y-%m-%d %H:%M:%S"),
+            )
+
+            task_func = self.task_wrapper(
+                task_book_and_pay,
+                self._job_book_and_pay_hook(job_id),
+                job.kwargs,
+            )
+
+            self.scheduler.add_job(
+                task_func,
+                "date",
+                run_date=run_date,
+                timezone=CHINA_TIMEZONE,
+                id=task_id,
+            )
+            return job
+
+        def _handle_success(self, job, job_id):
+            job.failed_count = 0
+            job.status = JobStatus.RUNNING
+            result = job.result[-1]
+            if result.code == 1:
+                run_date = datetime.strptime(
+                    result.data["next_exec_time"], "%Y-%m-%d %H:%M:%S"
+                )
+                job.kwargs["check_order"] = None
+                return _schedule_next_task(self, job, job_id, run_date)
+            else:
+                job.status = JobStatus.SUCCESS
+                job.task_todo = None
+                return job
+
+        def _handle_failed(self, job, job_id):
+            fluctuation = False
+            for start, end in self.fluctuate_time:
+                if start <= datetime.now(CHINA_TIMEZONE).time() <= end:
+                    fluctuation = True
+                    break
+            if job.failed_count >= 2 and not fluctuation:
+                job.failed_count += 1
+                job.status = JobStatus.FAILED
+                return job
+            else:
+                job.status = JobStatus.RETRY
+                job.failed_count += 1
+                run_date = datetime.now(CHINA_TIMEZONE) + timedelta(seconds=20)
+
+                return _schedule_next_task(self, job, job_id, run_date)
+
+        def hook(result):
+            job_db = JobSQLite(self.job_db_path)
+
+            job = job_db.get_job(job_id)
+            if not job:
+                logging.error("Job not found, id: %s", job_id)
+                return -1
+
+            job.result.append(result)
+            job.task_todo = None
+
+            if result.success:
+                job = _handle_success(self, job, job_id)
+                job_db.update_job(job)
+            else:
+                job = _handle_failed(self, job, job_id)
+                job_db.update_job(job)
+            return job_id
+
+        return hook
+
     def job_only_book(
         self, area: GymArea, username: str, renew_account: bool = True
     ) -> str:
@@ -702,7 +889,7 @@ class JobManager:
         )
 
         task_func = self.task_wrapper(
-            task_book, self._job_only_book_hook(job_id), kwargs
+            task_only_book, self._job_only_book_hook(job_id), kwargs
         )
         sdate = (
             datetime.strptime(area.sdate, "%Y-%m-%d")
@@ -767,7 +954,7 @@ class JobManager:
             )
 
             task_func = self.task_wrapper(
-                task_book,
+                task_only_book,
                 self._job_only_book_hook(job_id),
                 job.kwargs,
             )
@@ -781,9 +968,10 @@ class JobManager:
             )
             return job
 
-        def _handle_success(self, job, job_id, run_date):
+        def _handle_success(self, job, job_id):
             job.failed_count = 0
             job.status = JobStatus.RUNNING
+            result = job.result[-1]
             if result.code == 1:
                 run_date = datetime.strptime(
                     result.data["next_exec_time"], "%Y-%m-%d %H:%M:%S"
@@ -793,9 +981,9 @@ class JobManager:
                 run_date = datetime.now(CHINA_TIMEZONE) + timedelta(minutes=30)
                 job.kwargs["check_order"] = result.data
 
-            return self._schedule_next_task(job, job_id, run_date)
+            return _schedule_next_task(self, job, job_id, run_date)
 
-        def _handle_failed(self, job, job_id, run_date):
+        def _handle_failed(self, job, job_id):
             fluctuation = False
             for start, end in self.fluctuate_time:
                 if start <= datetime.now(CHINA_TIMEZONE).time() <= end:
@@ -810,7 +998,7 @@ class JobManager:
                 job.failed_count += 1
                 run_date = datetime.now(CHINA_TIMEZONE) + timedelta(seconds=20)
 
-                return _schedule_next_task(job, job_id, run_date)
+                return _schedule_next_task(self, job, job_id, run_date)
 
         def hook(result):
             job_db = JobSQLite(self.job_db_path)
@@ -824,14 +1012,46 @@ class JobManager:
             job.task_todo = None
 
             if result.success:
-                job = _handle_success(job, job_id, run_date)
+                job = _handle_success(self, job, job_id)
                 job_db.update_job(job)
             else:
-                job = _handle_failed(job, job_id, run_date)
+                job = _handle_failed(self, job, job_id)
                 job_db.update_job(job)
             return job_id
 
         return hook
+
+    def _resume_book_job(self) -> None:
+        """Resume existing booking jobs from database."""
+        job_db = JobSQLite(self.job_db_path)
+        jobs = job_db.get_all_jobs(job_type=JobType.BOOK, status=JobStatus.RUNNING)
+
+        for job in jobs.values():
+            if job.task_todo is not None:
+                job.kwargs["proxies"] = self.proxies
+                task_func = self.task_wrapper(
+                    task_only_book, self._job_only_book_hook(job.job_id), job.kwargs
+                )
+                now = datetime.now(CHINA_TIMEZONE) + timedelta(seconds=5)
+                run_time = datetime.strptime(
+                    job.task_todo.date, "%Y-%m-%d %H:%M:%S"
+                ).replace(tzinfo=CHINA_TIMEZONE)
+                if run_time <= now:
+                    job.status = JobStatus.FAILED
+                    job_db.update_job(job)
+                else:
+                    self.scheduler.add_job(
+                        task_func,
+                        "date",
+                        run_date=job.task_todo.date,
+                        timezone=CHINA_TIMEZONE,
+                        id=job.task_todo.task_id,
+                    )
+        jobs = job_db.get_all_jobs(job_type=JobType.BOOK, status=JobStatus.RETRY)
+        for job in jobs.values():
+            job.status = JobStatus.FAILED
+            job.kwargs["proxies"] = self.proxies
+            job_db.update_job(job)
 
     def task_wrapper(
         self,

@@ -35,6 +35,7 @@ class JobType(int, Enum):
     UNKNOW = 0
     RENEW = 1
     BOOK = 2
+    BOOK_AND_PAY = 3
 
 
 @dataclass_json
@@ -361,6 +362,25 @@ class OBGymAPI:
             RuntimeError: When getting job list fails
         """
         response = self._send_request("get_all_jobs", {})
+        return response["data"]
+
+    def book_and_pay(self, area: GymArea, account: str) -> Dict:
+        """
+        Create a booking and payment job
+
+        Args:
+            area: Area object
+            account: Account username
+
+        Returns:
+            Dict: Response data field containing job_id
+
+        Raises:
+            RuntimeError: When creating job fails
+        """
+        response = self._send_request(
+            "book_and_pay", {"area": area.to_dict(), "account": account}
+        )
         return response["data"]
 
     def only_book(self, area: GymArea, account: str) -> Dict:

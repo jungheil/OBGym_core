@@ -254,7 +254,7 @@ class GymAPI:
                 headers=headers,
                 data=data,
                 cookies=cookies,
-                impersonate="edge101",
+                impersonate=self._impersonate,
                 proxies=self._proxies,
             )
         logging.debug("gym_api.book get response: %s", response.text)
@@ -271,12 +271,15 @@ class GymAPI:
         Returns:
             Dictionary containing payment result
         """
+
         headers = {
-            "Accept": "text/html, */*; q=0.01",
+            "Accept": "application/json, text/javascript, */*; q=0.01",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             "Connection": "keep-alive",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
             "DNT": "1",
-            "Referer": f"https://gym.sysu.edu.cn/app/pay/show.html?id={orderid}",
+            "Origin": "https://gym.sysu.edu.cn",
+            "Referer": f"https://gym.sysu.edu.cn/app/pay/show.html?id={orderid}&&type=sport",
             "Sec-Fetch-Dest": "empty",
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-origin",
@@ -286,21 +289,28 @@ class GymAPI:
             "sec-ch-ua-mobile": "?0",
             "sec-ch-ua-platform": '"Windows"',
         }
-        params = {
+        data_param = {
+            "payid": 2,
             "orderid": orderid,
-            "payid": "2",
+            "ctypeindex": 0,
+            "password": "",
         }
+        data = {
+            "param": json.dumps(data_param),
+            "json": "true",
+        }
+
         logging.debug(
-            "gym_api.pay request info:\nheaders: %s\nparams: %s\ncookies: %s",
+            "gym_api.pay request info:\nheaders: %s\ndata: %s\ncookies: %s",
             headers,
-            params,
+            data,
             cookies,
         )
         async with requests.AsyncSession() as s:
-            response = await s.get(
-                "https://gym.sysu.edu.cn/app/pay/account/showpay.html",
+            response = await s.post(
+                "https://gym.sysu.edu.cn/app/pay/account/topay.html",
                 headers=headers,
-                params=params,
+                data=data,
                 cookies=cookies,
                 impersonate=self._impersonate,
                 proxies=self._proxies,
@@ -326,7 +336,7 @@ class GymAPI:
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
             "DNT": "1",
             "Origin": "https://gym.sysu.edu.cn",
-            "Referer": f"https://gym.sysu.edu.cn/app/order/successpage.html?id={orderid}",
+            "Referer": "https://gym.sysu.edu.cn/app/yyuser/personal.html",
             "Sec-Fetch-Dest": "empty",
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-origin",
@@ -348,11 +358,11 @@ class GymAPI:
         )
         async with requests.AsyncSession() as s:
             response = await s.post(
-                "https://gym.sysu.edu.cn/app/order/del.html",
+                "https://gym.sysu.edu.cn/app/order/delorder.html",
                 headers=headers,
                 data=data,
                 cookies=cookies,
-                impersonate="edge101",
+                impersonate=self._impersonate,
                 proxies=self._proxies,
             )
         logging.debug("gym_api.del_order get response: %s", response.text)

@@ -200,3 +200,37 @@ class Gym:
             if od["orderid"] == order.orderid:
                 return od["status"]
         return None
+
+    async def pay(self, order: GymOrder, cookies: Dict[str, str]) -> bool:
+        """
+        Pay for a specific order
+
+        Args:
+            order: GymOrder object representing the order to pay
+            cookies: Authentication cookies for API request
+
+        Returns:
+            True if payment is successful, False otherwise
+        """
+        data = await self._api.pay(order.orderid, cookies)
+        if data["result"] == "1":
+            return True
+        else:
+            raise RuntimeError(f"Pay failed, api return: {data}")
+
+    async def delete_order(self, order: GymOrder, cookies: Dict[str, str]) -> bool:
+        """
+        Delete a specific order
+
+        Args:
+            order: GymOrder object representing the order to delete
+            cookies: Authentication cookies for API request
+
+        Returns:
+            True if deletion is successful, False otherwise
+        """
+        data = await self._api.del_order(order.orderid, cookies)
+        if data["result"] == "1":
+            return True
+        else:
+            raise RuntimeError(f"Delete failed, api return: {data}")

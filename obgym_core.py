@@ -399,6 +399,35 @@ class OBGymCore:
         self.db.set_valid(account, True)
         return self.make_response(0, {"account": account}, "")
 
+    def action_book_and_pay(self, dict_data: dict) -> bytes:
+        """
+        Create a booking job for a specific area and pay for it.
+
+        Args:
+            dict_data: Dictionary containing 'area' and 'account' keys
+
+        Returns:
+            Response bytes containing job_id
+
+        Raises:
+            RuntimeError: If required parameters are missing
+            ValueError: If account is not found
+        """
+        logging.info("Action book_and_pay called")
+        try:
+            area_args = dict_data["area"]
+            account = dict_data["account"]
+            area = GymArea.from_dict(area_args)
+        except Exception as e:
+            raise RuntimeError(f"Parameter error: {e}")
+
+        account_data = self.db.query_accounts(account)
+        if not account_data:
+            raise ValueError("Account not found")
+
+        job_id = self.job_manager.job_book_and_pay(area, account)
+        return self.make_response(0, {"job_id": job_id}, "")
+
     def action_only_book(self, dict_data: dict) -> bytes:
         """
         Create a booking job for a specific area.
